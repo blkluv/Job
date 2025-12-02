@@ -1,6 +1,10 @@
 # jobmcp
 
 
+https://github.com/user-attachments/assets/608dec80-083e-4a9b-a292-10a46c4a63c3
+
+
+
 sse to begin
 
 npx @modelcontextprotocol/inspector
