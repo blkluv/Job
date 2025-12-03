@@ -4,6 +4,9 @@ Clone, Build, Run :
 
 <img width="1604" height="882" alt="nos_2" src="https://github.com/user-attachments/assets/9e159a0c-dc8b-4728-83db-4778c5c31578" />
 
+<img width="1907" height="789" alt="job_find" src="https://github.com/user-attachments/assets/905a5bbf-803e-4844-a2c7-1c1814f7eeca" />
+
+
 ---
 
 
