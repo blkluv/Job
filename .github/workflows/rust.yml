@@ -17,14 +17,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: djp-jobmcp
-            archive_name: djp-jobmcp.linux.tar.gz
+            artifact_name: jobmcp
+            archive_name: jobmcp.linux.tar.gz
           - os: windows-latest
-            artifact_name: djp-jobmcp.exe
-            archive_name: djp-jobmcp.windows.zip
+            artifact_name: jobmcp.exe
+            archive_name: jobmcp.windows.zip
           - os: macos-latest
-            artifact_name: djp-jobmcp
-            archive_name: djp-jobmcp.macos.tar.gz
+            artifact_name: jobmcp
+            archive_name: jobmcp.macos.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
