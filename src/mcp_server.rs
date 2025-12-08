@@ -1,5 +1,5 @@
 // src/mcp_server.rs
-// Standalone MCP Server for Nostr Job Listings (Kind 39993)
+// Standalone MCP Server for Nostr Job Listings (Kind 9993)
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +22,7 @@ use std::collections::HashMap;
 
 // ==================== Configuration ====================
 
+#[allow(dead_code)]
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const RELAY_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
@@ -225,11 +226,11 @@ impl NostrJobsServer {
         })
     }
 
-fn build_filter(company: Option<&str>, skill: Option<&str>, employment_type: Option<&str>, limit: usize) -> Filter {
-    // Fetch all kind 39993 events for in-memory filtering
+fn build_filter(_company: Option<&str>, _skill: Option<&str>, _employment_type: Option<&str>, _limit: usize) -> Filter {
+    // Fetch all kind 9993 events for in-memory filtering
     // Use a larger limit since we filter after fetching
     Filter::new()
-        .kind(Kind::from(39993u16))
+        .kind(Kind::from(9993u16))
         .limit(100) // Fetch up to 100 to filter from
 }
 
@@ -440,7 +441,7 @@ pub async fn search_jobs(
             Filter::new().id(event_id)
         } else {
             Filter::new()
-                .kind(Kind::from(39993u16))
+                .kind(Kind::from(9993u16))
                 .custom_tag(
                     SingleLetterTag::lowercase(Alphabet::J),
                     args.job_id.clone()
@@ -452,13 +453,12 @@ pub async fn search_jobs(
         // Check cache
         {
             let cache = self.cache.read().await;
-            if let Some(cached) = cache.get(&key) {
-                if let Some(event) = cached.events.first() {
+            if let Some(cached) = cache.get(&key)
+                && let Some(event) = cached.events.first() {
                     let mut result = self.format_job_summary(event);
                     result.push_str(&format!("\n\n📄 Full Job Details:\n{}", event.content));
                     return Ok(CallToolResult::success(vec![Content::text(result)]));
                 }
-            }
         }
 
         match timeout(Duration::from_millis(2500), self.fetch_events_fast(filter, key)).await {
@@ -469,7 +469,7 @@ pub async fn search_jobs(
                     )]));
                 }
 
-                let event = events.iter().next().unwrap();
+                let event = events.first().unwrap();
                 let mut result = self.format_job_summary(event);
                 result.push_str(&format!("\n\n📄 Full Job Details:\n{}", event.content));
 

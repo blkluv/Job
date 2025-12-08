@@ -5,14 +5,16 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"
+axum = "0.8.7"
 futures = "0.3.31"
 http = "1.4.0"
 nostr-sdk = "0.44.1"
-rmcp = { version = "0.9.0", features = ["server", "transport-sse-server"] }
+rmcp = { version = "0.9.0", features = ["tower","server", "transport-sse-server", "transport-streamable-http-server"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tokio = { version = "1.46.1", features = ["full"] }
 tokio-util = "0.7.17"
+tower = "0.5.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

@@ -861,6 +861,7 @@ name = "jobmcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "futures",
  "http",
  "nostr-sdk",
@@ -869,6 +870,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

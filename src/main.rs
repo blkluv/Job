@@ -1,8 +1,12 @@
-// src/main.rs (or examples/nostr_jobs_mcp.rs)
+// src/main.rs - Updated for HTTP Streamable Transport
 
-use rmcp::transport::sse_server::SseServer;
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpService,
+    session::local::LocalSessionManager
+};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use jobmcp::NostrJobsServer;
+use std::net::SocketAddr;
 
 const BIND_ADDRESS: &str = "127.0.0.1:8000";
 
@@ -17,22 +21,39 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    println!("🚀 Starting Nostr Jobs MCP Server");
+    println!("🚀 Starting Nostr Jobs MCP Server (HTTP Streamable)");
     println!("📡 Binding to: {}", BIND_ADDRESS);
-    println!("🔗 MCP endpoint: http://{}/sse", BIND_ADDRESS);
+    println!("🔗 MCP endpoint: http://{}/mcp", BIND_ADDRESS);
     println!();
     println!("💡 Connecting to Nostr relays...");
     
-    // Create the server instance first (this is async)
-    let server = NostrJobsServer::new().await;
+    // Create the HTTP service with factory closure that returns Result<NostrJobsServer, io::Error>
+    // The factory is called for each new session
+    // Note: Since NostrJobsServer::new() is async, we need to block on it here
+    // This means the server initialization happens synchronously during session creation
+    let service = StreamableHttpService::new(
+        || {
+            // Block on the async initialization
+            // This works because we're in a tokio runtime context
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    Ok(NostrJobsServer::new().await)
+                })
+            })
+        },
+        LocalSessionManager::default().into(),
+        Default::default(),
+    );
+
+    // Create axum router and mount the MCP service at /mcp
+    let router = axum::Router::new()
+        .nest_service("/mcp", service);
+
+    // Parse the bind address
+    let addr: SocketAddr = BIND_ADDRESS.parse()?;
     
-    // Clone it for the service provider
-    let server_clone = server.clone();
-    
-    // This spawns background tasks to handle the server
-    let ct = SseServer::serve(BIND_ADDRESS.parse()?)
-        .await?
-        .with_service_directly(move || server_clone.clone());
+    // Create the TCP listener
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     
     println!("✅ Server is running!");
     println!("📋 Available tools:");
@@ -47,14 +68,18 @@ async fn main() -> anyhow::Result<()> {
     println!();
     println!("Press Ctrl+C to stop the server...");
     println!();
-    
-    // Main task blocks here, waiting for Ctrl+C
-    tokio::signal::ctrl_c().await?;
-    
-    println!("\n🛑 Shutting down server...");
-    // Signal background tasks to stop
-    ct.cancel();
+
+    // Serve with graceful shutdown
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for ctrl-c");
+            println!("\n🛑 Shutting down server...");
+        })
+        .await?;
     
     println!("✅ Server stopped");
     Ok(())
 }
+
