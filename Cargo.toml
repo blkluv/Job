@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.98"
 axum = "0.8.7"
+dotenvy = "0.15.0"
 futures = "0.3.31"
 http = "1.4.0"
 nostr-sdk = "0.44.1"

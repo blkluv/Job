@@ -1,4 +1,4 @@
-// src/main.rs - Updated for HTTP Streamable Transport
+// src/main.rs - Updated for HTTP Streamable Transport with .env support
 
 use rmcp::transport::streamable_http_server::{
     StreamableHttpService,
@@ -7,8 +7,48 @@ use rmcp::transport::streamable_http_server::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use jobmcp::NostrJobsServer;
 use std::net::SocketAddr;
+use std::path::Path;
+use std::fs;
 
-const BIND_ADDRESS: &str = "127.0.0.1:8000";
+const DEFAULT_PORT: u16 = 9993;
+const ENV_FILE: &str = ".env";
+
+/// Load port from .env file, creating it with default if it doesn't exist
+fn load_or_create_port() -> anyhow::Result<u16> {
+    let env_path = Path::new(ENV_FILE);
+    
+    // If .env doesn't exist, create it with default port
+    if !env_path.exists() {
+        let default_content = format!("PORT={}\n", DEFAULT_PORT);
+        fs::write(env_path, default_content)?;
+        println!("📝 Created {} with default port {}", ENV_FILE, DEFAULT_PORT);
+        return Ok(DEFAULT_PORT);
+    }
+    
+    // Load .env file
+    dotenvy::dotenv().ok();
+    
+    // Try to read PORT from environment
+    match std::env::var("PORT") {
+        Ok(port_str) => {
+            match port_str.parse::<u16>() {
+                Ok(port) => {
+                    println!("📖 Loaded port {} from {}", port, ENV_FILE);
+                    Ok(port)
+                }
+                Err(_) => {
+                    eprintln!("⚠️  Invalid PORT value in {}: '{}'. Using default {}", 
+                        ENV_FILE, port_str, DEFAULT_PORT);
+                    Ok(DEFAULT_PORT)
+                }
+            }
+        }
+        Err(_) => {
+            println!("⚠️  No PORT found in {}. Using default {}", ENV_FILE, DEFAULT_PORT);
+            Ok(DEFAULT_PORT)
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,19 +62,19 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     println!("🚀 Starting Nostr Jobs MCP Server (HTTP Streamable)");
-    println!("📡 Binding to: {}", BIND_ADDRESS);
-    println!("🔗 MCP endpoint: http://{}/mcp", BIND_ADDRESS);
+    
+    // Load port from .env
+    let port = load_or_create_port()?;
+    let bind_address = format!("127.0.0.1:{}", port);
+    
+    println!("📡 Binding to: {}", bind_address);
+    println!("🔗 MCP endpoint: http://{}/mcp", bind_address);
     println!();
     println!("💡 Connecting to Nostr relays...");
     
     // Create the HTTP service with factory closure that returns Result<NostrJobsServer, io::Error>
-    // The factory is called for each new session
-    // Note: Since NostrJobsServer::new() is async, we need to block on it here
-    // This means the server initialization happens synchronously during session creation
     let service = StreamableHttpService::new(
         || {
-            // Block on the async initialization
-            // This works because we're in a tokio runtime context
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(async {
                     Ok(NostrJobsServer::new().await)
@@ -50,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         .nest_service("/mcp", service);
 
     // Parse the bind address
-    let addr: SocketAddr = BIND_ADDRESS.parse()?;
+    let addr: SocketAddr = bind_address.parse()?;
     
     // Create the TCP listener
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -82,4 +122,3 @@ async fn main() -> anyhow::Result<()> {
     println!("✅ Server stopped");
     Ok(())
 }
-
