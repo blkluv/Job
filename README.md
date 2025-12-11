@@ -84,36 +84,16 @@ Context: ○○○○○○○○○○ 1% (5150/1000000 tokens)
 ```
 
 # Goose config
+```~/.config/goose/config.yaml```
 
 ```yaml
 extensions:
-  todo:
-    enabled: true
-    type: platform
-    name: todo
-    description: Enable a todo list for Goose so it can keep track of what it is doing
-    bundled: true
-    available_tools: []
-  extensionmanager:
-    enabled: true
-    type: platform
-    name: Extension Manager
-    description: Enable extension management tools for discovering, enabling, and disabling extensions
-    bundled: true
-    available_tools: []
-  chatrecall:
-    enabled: true
-    type: platform
-    name: chatrecall
-    description: Search past conversations and load session summaries for contextual memory
-    bundled: true
-    available_tools: []
   jobmcp:
     enabled: true
     type: streamable_http
     name: jobmcp
-    description: job search mcp
-    uri: http://127.0.0.1:8000/mcp
+    description: jobmcp mcp server for searching latest jobs and tool for fetching job details
+    uri: http://localhost:9993/mcp
     envs: {}
     env_keys: []
     headers: {}
@@ -125,6 +105,7 @@ GOOSE_MODEL: gemini-2.5-pro
 GOOSE_PROVIDER: google
 OPENAI_BASE_PATH: v1/chat/completions
 ```
+
 ## Demo
 https://github.com/user-attachments/assets/65077834-c0bb-4e07-af07-fad76eaeb0b5
 
