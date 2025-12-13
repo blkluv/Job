@@ -1,5 +1,5 @@
 // src/mcp_server.rs
-// Standalone MCP Server for Nostr Job Listings (Kind 9993)
+// Standalone MCP Server for Nostr Job Listings (Kind 9993) with Performance Metrics
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +26,150 @@ use std::collections::HashMap;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const RELAY_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+// ==================== Performance Metrics ====================
+
+#[derive(Clone, Debug, Default)]
+struct PerformanceMetrics {
+    total_requests: usize,
+    cache_hits: usize,
+    cache_misses: usize,
+    relay_fetches: usize,
+    failed_fetches: usize,
+    total_fetch_time_ms: u128,
+    total_cache_time_ms: u128,
+    fastest_fetch_ms: Option<u128>,
+    slowest_fetch_ms: Option<u128>,
+    fastest_cache_ms: Option<u128>,
+    slowest_cache_ms: Option<u128>,
+}
+
+impl PerformanceMetrics {
+    fn record_cache_hit(&mut self, duration_ms: u128) {
+        self.total_requests += 1;
+        self.cache_hits += 1;
+        self.total_cache_time_ms += duration_ms;
+        
+        self.fastest_cache_ms = Some(
+            self.fastest_cache_ms.map_or(duration_ms, |f| f.min(duration_ms))
+        );
+        self.slowest_cache_ms = Some(
+            self.slowest_cache_ms.map_or(duration_ms, |s| s.max(duration_ms))
+        );
+    }
+
+    fn record_cache_miss(&mut self, duration_ms: u128, success: bool) {
+        self.total_requests += 1;
+        self.cache_misses += 1;
+        
+        if success {
+            self.relay_fetches += 1;
+            self.total_fetch_time_ms += duration_ms;
+            
+            self.fastest_fetch_ms = Some(
+                self.fastest_fetch_ms.map_or(duration_ms, |f| f.min(duration_ms))
+            );
+            self.slowest_fetch_ms = Some(
+                self.slowest_fetch_ms.map_or(duration_ms, |s| s.max(duration_ms))
+            );
+        } else {
+            self.failed_fetches += 1;
+        }
+    }
+
+    fn cache_hit_rate(&self) -> f64 {
+        if self.total_requests == 0 {
+            0.0
+        } else {
+            (self.cache_hits as f64 / self.total_requests as f64) * 100.0
+        }
+    }
+
+    fn avg_cache_time(&self) -> f64 {
+        if self.cache_hits == 0 {
+            0.0
+        } else {
+            self.total_cache_time_ms as f64 / self.cache_hits as f64
+        }
+    }
+
+    fn avg_fetch_time(&self) -> f64 {
+        if self.relay_fetches == 0 {
+            0.0
+        } else {
+            self.total_fetch_time_ms as f64 / self.relay_fetches as f64
+        }
+    }
+
+    fn time_saved_ms(&self) -> u128 {
+        if self.cache_hits == 0 || self.relay_fetches == 0 {
+            return 0;
+        }
+        
+        let avg_fetch = self.avg_fetch_time();
+        let avg_cache = self.avg_cache_time();
+        let time_saved_per_hit = (avg_fetch - avg_cache).max(0.0);
+        
+        (time_saved_per_hit * self.cache_hits as f64) as u128
+    }
+
+    fn format_report(&self) -> String {
+        format!(
+            "📊 Performance Metrics Report\n\
+            ═══════════════════════════════════════════════════════════\n\n\
+            🔢 Request Statistics:\n\
+            • Total Requests: {}\n\
+            • Cache Hits: {} ({}%)\n\
+            • Cache Misses: {}\n\
+            • Relay Fetches: {}\n\
+            • Failed Fetches: {}\n\n\
+            ⚡ Cache Performance:\n\
+            • Average Cache Response: {:.2}ms\n\
+            • Fastest Cache Hit: {}ms\n\
+            • Slowest Cache Hit: {}ms\n\n\
+            🌐 Relay Performance:\n\
+            • Average Relay Fetch: {:.2}ms\n\
+            • Fastest Fetch: {}ms\n\
+            • Slowest Fetch: {}ms\n\n\
+            💡 Performance Gains:\n\
+            • Cache Hit Rate: {:.1}%\n\
+            • Time Saved by Cache: {:.2}s\n\
+            • Speed Improvement: {:.1}x faster with cache\n\n\
+            📈 Efficiency Metrics:\n\
+            • Relay Load Reduction: {:.1}%\n\
+            • Success Rate: {:.1}%",
+            self.total_requests,
+            self.cache_hits,
+            self.cache_hit_rate(),
+            self.cache_misses,
+            self.relay_fetches,
+            self.failed_fetches,
+            self.avg_cache_time(),
+            self.fastest_cache_ms.unwrap_or(0),
+            self.slowest_cache_ms.unwrap_or(0),
+            self.avg_fetch_time(),
+            self.fastest_fetch_ms.unwrap_or(0),
+            self.slowest_fetch_ms.unwrap_or(0),
+            self.cache_hit_rate(),
+            self.time_saved_ms() as f64 / 1000.0,
+            if self.avg_cache_time() > 0.0 { 
+                self.avg_fetch_time() / self.avg_cache_time() 
+            } else { 
+                1.0 
+            },
+            if self.total_requests > 0 {
+                (self.cache_hits as f64 / self.total_requests as f64) * 100.0
+            } else {
+                0.0
+            },
+            if self.total_requests > 0 {
+                (self.relay_fetches as f64 / self.total_requests as f64) * 100.0
+            } else {
+                0.0
+            }
+        )
+    }
+}
 
 // ==================== Cache Types ====================
 
@@ -83,6 +227,7 @@ pub struct NostrJobsServer {
     relays: Vec<String>,
     cache: Arc<RwLock<HashMap<String, CachedEvents>>>,
     relay_healthy: Arc<Mutex<bool>>,
+    metrics: Arc<RwLock<PerformanceMetrics>>,
     pub tool_router: ToolRouter<NostrJobsServer>,
     pub prompt_router: PromptRouter<NostrJobsServer>,
 }
@@ -97,15 +242,18 @@ impl NostrJobsServer {
             "wss://relay.nostr.band".to_string(),
             "wss://nos.lol".to_string(),
             "wss://nostr-pub.wellorder.net".to_string(),
-            // "wss://nostr.wine".to_string(),
         ];
 
-        // Add all relays first (non-blocking)
+        tracing::info!(
+            relay_count = relays.len(),
+            relays = ?relays,
+            "initializing_nostr_mcp_server"
+        );
+
         for relay in &relays {
             let _ = client.add_relay(relay).await;
         }
         
-        // Spawn background connection task
         let client_clone = client.clone();
         tokio::spawn(async move {
             let _ = timeout(Duration::from_secs(15), client_clone.connect()).await;
@@ -116,20 +264,21 @@ impl NostrJobsServer {
             relays,
             cache: Arc::new(RwLock::new(HashMap::new())),
             relay_healthy: Arc::new(Mutex::new(false)),
+            metrics: Arc::new(RwLock::new(PerformanceMetrics::default())),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         };
 
-        // Spawn background health check
         let server_clone = server.clone();
         tokio::spawn(async move {
             server_clone.health_check_loop().await;
         });
 
+        tracing::info!("nostr_mcp_server_initialized");
+
         server
     }
 
-    // Background health check loop
     async fn health_check_loop(&self) {
         loop {
             tokio::time::sleep(HEALTH_CHECK_INTERVAL).await;
@@ -139,10 +288,20 @@ impl NostrJobsServer {
             
             match timeout(Duration::from_secs(5), client.fetch_events(filter, Duration::from_secs(3))).await {
                 Ok(Ok(_)) => {
+                    let was_healthy = *self.relay_healthy.lock().await;
                     *self.relay_healthy.lock().await = true;
+                    
+                    if !was_healthy {
+                        tracing::info!("relay_health_recovered");
+                    }
                 }
                 _ => {
+                    let was_healthy = *self.relay_healthy.lock().await;
                     *self.relay_healthy.lock().await = false;
+                    
+                    if was_healthy {
+                        tracing::warn!("relay_health_degraded");
+                    }
                 }
             }
         }
@@ -233,17 +392,28 @@ impl NostrJobsServer {
         )
     }
 
-    // Fast fetch with aggressive timeout and cache fallback
     async fn fetch_events_fast(
         &self,
         filter: Filter,
         cache_key: String,
     ) -> Result<Vec<Event>, String> {
+        let start = std::time::Instant::now();
         let client = self.client.lock().await;
         
         match timeout(RELAY_FETCH_TIMEOUT, client.fetch_events(filter, Duration::from_millis(1500))).await {
             Ok(Ok(events)) => {
+                let duration_ms = start.elapsed().as_millis();
                 let events_vec: Vec<Event> = events.into_iter().collect();
+                
+                tracing::info!(
+                    cache_key = %cache_key,
+                    duration_ms = duration_ms,
+                    event_count = events_vec.len(),
+                    source = "relay",
+                    success = true,
+                    "fetch_events_success"
+                );
+                
                 if !events_vec.is_empty() {
                     let cache = self.cache.clone();
                     let cached = CachedEvents {
@@ -255,13 +425,39 @@ impl NostrJobsServer {
                     });
                     *self.relay_healthy.lock().await = true;
                 }
+                
+                self.metrics.write().await.record_cache_miss(duration_ms, true);
                 Ok(events_vec)
             }
             Ok(Err(e)) => {
+                let duration_ms = start.elapsed().as_millis();
+                
+                tracing::warn!(
+                    cache_key = %cache_key,
+                    duration_ms = duration_ms,
+                    error = %e,
+                    source = "relay",
+                    success = false,
+                    "fetch_events_error"
+                );
+                
+                self.metrics.write().await.record_cache_miss(duration_ms, false);
                 *self.relay_healthy.lock().await = false;
                 Err(format!("Fetch error: {}", e))
             }
             Err(_) => {
+                let duration_ms = start.elapsed().as_millis();
+                
+                tracing::warn!(
+                    cache_key = %cache_key,
+                    duration_ms = duration_ms,
+                    source = "relay",
+                    success = false,
+                    reason = "timeout",
+                    "fetch_events_timeout"
+                );
+                
+                self.metrics.write().await.record_cache_miss(duration_ms, false);
                 *self.relay_healthy.lock().await = false;
                 Err("Relay timeout".to_string())
             }
@@ -295,23 +491,42 @@ impl NostrJobsServer {
 
         // Check cache first
         {
+            let start = std::time::Instant::now();
             let cache = self.cache.read().await;
             if let Some(cached) = cache.get(&key) {
+                let duration_ms = start.elapsed().as_millis();
+                let is_fresh = cached.is_fresh(Duration::from_secs(60));
+                
+                tracing::info!(
+                    cache_key = %key,
+                    duration_ms = duration_ms,
+                    event_count = cached.events.len(),
+                    source = "cache",
+                    is_fresh = is_fresh,
+                    "cache_hit"
+                );
+                
+                self.metrics.write().await.record_cache_hit(duration_ms);
+                
                 let mut results = format!("Found {} job listing(s){}:\n\n", 
                     cached.events.len(),
-                    if cached.is_fresh(Duration::from_secs(60)) { "" } else { " (cached)" }
+                    if is_fresh { " ⚡ [CACHED]" } else { " 📦 [CACHED - STALE]" }
                 );
                 for (i, event) in cached.events.iter().enumerate() {
                     results.push_str(&format!("{}. {}\n\n", i + 1, self.format_job_summary(event)));
                 }
                 return Ok(CallToolResult::success(vec![Content::text(results)]));
+            } else {
+                tracing::debug!(
+                    cache_key = %key,
+                    "cache_miss"
+                );
             }
         }
 
         // Try fresh fetch
         match timeout(Duration::from_millis(2500), self.fetch_events_fast(filter, key.clone())).await {
             Ok(Ok(mut events)) => {
-                // Filter in-memory
                 events.retain(|event| {
                     let tags: Vec<_> = event.tags.iter().collect();
                     
@@ -356,7 +571,7 @@ impl NostrJobsServer {
                     )]));
                 }
 
-                let mut results = format!("Found {} job listing(s):\n\n", events.len());
+                let mut results = format!("Found {} job listing(s) 🌐 [FRESH]:\n\n", events.len());
                 for (i, event) in events.iter().enumerate() {
                     results.push_str(&format!("{}. {}\n\n", i + 1, self.format_job_summary(event)));
                 }
@@ -403,11 +618,16 @@ impl NostrJobsServer {
 
         // Check cache
         {
+            let start = std::time::Instant::now();
             let cache = self.cache.read().await;
             if let Some(cached) = cache.get(&key)
                 && let Some(event) = cached.events.first() {
+                    let duration_ms = start.elapsed().as_millis();
+                    self.metrics.write().await.record_cache_hit(duration_ms);
+                    
                     let mut result = self.format_job_summary(event);
-                    result.push_str(&format!("\n\n📄 Full Job Details:\n{}", event.content));
+                    result.push_str("\n\n⚡ [CACHED]\n\n📄 Full Job Details:\n");
+                    result.push_str(&event.content);
                     return Ok(CallToolResult::success(vec![Content::text(result)]));
                 }
         }
@@ -422,7 +642,8 @@ impl NostrJobsServer {
 
                 let event = events.first().unwrap();
                 let mut result = self.format_job_summary(event);
-                result.push_str(&format!("\n\n📄 Full Job Details:\n{}", event.content));
+                result.push_str("\n\n🌐 [FRESH]\n\n📄 Full Job Details:\n");
+                result.push_str(&event.content);
 
                 Ok(CallToolResult::success(vec![Content::text(result)]))
             }
@@ -433,6 +654,74 @@ impl NostrJobsServer {
                 )]))
             }
         }
+    }
+
+    #[tool(description = "Get comprehensive performance metrics showing cache effectiveness")]
+    pub async fn get_performance_metrics(&self) -> Result<CallToolResult, McpError> {
+        let metrics = self.metrics.read().await;
+        let report = metrics.format_report();
+        
+        // Log metrics snapshot for monitoring systems
+        tracing::info!(
+            total_requests = metrics.total_requests,
+            cache_hits = metrics.cache_hits,
+            cache_misses = metrics.cache_misses,
+            cache_hit_rate = metrics.cache_hit_rate(),
+            relay_fetches = metrics.relay_fetches,
+            failed_fetches = metrics.failed_fetches,
+            avg_cache_time_ms = metrics.avg_cache_time(),
+            avg_fetch_time_ms = metrics.avg_fetch_time(),
+            total_time_saved_ms = metrics.time_saved_ms(),
+            "performance_metrics_snapshot"
+        );
+        
+        Ok(CallToolResult::success(vec![Content::text(report)]))
+    }
+
+    #[tool(description = "Reset performance metrics (useful for testing)")]
+    pub async fn reset_metrics(&self) -> Result<CallToolResult, McpError> {
+        let old_metrics = self.metrics.read().await.clone();
+        *self.metrics.write().await = PerformanceMetrics::default();
+        
+        tracing::info!(
+            old_total_requests = old_metrics.total_requests,
+            old_cache_hit_rate = old_metrics.cache_hit_rate(),
+            old_time_saved_ms = old_metrics.time_saved_ms(),
+            "metrics_reset"
+        );
+        
+        Ok(CallToolResult::success(vec![Content::text(
+            "✅ Performance metrics have been reset.".to_string()
+        )]))
+    }
+
+    #[tool(description = "Clear the cache and show before/after metrics")]
+    pub async fn clear_cache(&self) -> Result<CallToolResult, McpError> {
+        let metrics_before = self.metrics.read().await.clone();
+        let cache_size = self.cache.read().await.len();
+        self.cache.write().await.clear();
+        
+        tracing::warn!(
+            cache_entries_cleared = cache_size,
+            cache_hits_before = metrics_before.cache_hits,
+            cache_hit_rate_before = metrics_before.cache_hit_rate(),
+            "cache_cleared"
+        );
+        
+        let report = format!(
+            "🗑️  Cache Cleared Successfully\n\n\
+            Cache statistics before clear:\n\
+            • Total cached queries: {}\n\
+            • Cache hits: {}\n\
+            • Cache hit rate: {:.1}%\n\n\
+            ⚠️  Next queries will fetch fresh data from relays.\n\
+            💡 Use get_performance_metrics to track the impact.",
+            cache_size,
+            metrics_before.cache_hits,
+            metrics_before.cache_hit_rate()
+        );
+        
+        Ok(CallToolResult::success(vec![Content::text(report)]))
     }
 
     #[tool(description = "List all connected Nostr relays")]
@@ -451,10 +740,13 @@ impl NostrJobsServer {
         let filter = Self::build_filter(None, None, None, 100);
         let key = "stats:all".to_string();
 
-        // Check cache
         {
+            let start = std::time::Instant::now();
             let cache = self.cache.read().await;
             if let Some(cached) = cache.get(&key) {
+                let duration_ms = start.elapsed().as_millis();
+                self.metrics.write().await.record_cache_hit(duration_ms);
+                
                 let events = &cached.events;
                 let (employment_counts, company_counts, skill_counts) = 
                     Self::analyze_events(events);
@@ -465,7 +757,7 @@ impl NostrJobsServer {
                     Employment Types:\n{}\n\n\
                     Top Companies:\n{}\n\n\
                     Top Skills:\n{}",
-                    if cached.is_fresh(Duration::from_secs(120)) { "" } else { " (cached)" },
+                    if cached.is_fresh(Duration::from_secs(120)) { " ⚡ [CACHED]" } else { " 📦 [CACHED - STALE]" },
                     events.len(),
                     format_top_items(&employment_counts, 5),
                     format_top_items(&company_counts, 5),
@@ -481,7 +773,7 @@ impl NostrJobsServer {
                     Self::analyze_events(&events);
 
                 let stats = format!(
-                    "📊 Nostr Job Listings Statistics\n\n\
+                    "📊 Nostr Job Listings Statistics 🌐 [FRESH]\n\n\
                     Total Listings: {}\n\n\
                     Employment Types:\n{}\n\n\
                     Top Companies:\n{}\n\n\
@@ -532,7 +824,6 @@ impl NostrJobsServer {
     }
 }
 
-// Helper function to format top items
 fn format_top_items(map: &HashMap<String, usize>, limit: usize) -> String {
     let mut items: Vec<_> = map.iter().collect();
     items.sort_by(|a, b| b.1.cmp(a.1));
@@ -625,6 +916,9 @@ impl ServerHandler for NostrJobsServer {
                 Tools:\n\
                 • search_jobs - Search for jobs by company, skill, or employment type\n\
                 • get_job_details - Get detailed information about a specific job\n\
+                • get_performance_metrics - View cache performance and efficiency gains\n\
+                • clear_cache - Clear cache and see impact on performance\n\
+                • reset_metrics - Reset performance tracking\n\
                 • list_relays - Show connected Nostr relays\n\
                 • get_stats - Get statistics about job listings\n\n\
                 Prompts:\n\
@@ -632,7 +926,12 @@ impl ServerHandler for NostrJobsServer {
                 • analyze_job_market - Analyze current job market trends\n\n\
                 Resources:\n\
                 • jobs://latest - Latest job listings\n\
-                • jobs://stats - Job market statistics".to_string()
+                • jobs://stats - Job market statistics\n\n\
+                Performance Features:\n\
+                • Automatic caching with 60s TTL\n\
+                • Detailed metrics tracking\n\
+                • Cache hit/miss analytics\n\
+                • Response time comparison".to_string()
             ),
         }
     }
