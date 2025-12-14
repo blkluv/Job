@@ -241,7 +241,6 @@ impl NostrJobsServer {
             "wss://relay.damus.io".to_string(),
             "wss://relay.nostr.band".to_string(),
             "wss://nos.lol".to_string(),
-            "wss://nostr-pub.wellorder.net".to_string(),
         ];
 
         tracing::info!(
@@ -603,6 +602,26 @@ impl NostrJobsServer {
         &self,
         Parameters(args): Parameters<GetJobArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let key = format!("job:{}", args.job_id);
+
+        // Check cache first - avoid relay request entirely if cached
+        {
+            let start = std::time::Instant::now();
+            let cache = self.cache.read().await;
+            if let Some(cached) = cache.get(&key) {
+                if let Some(event) = cached.events.first() {
+                    let duration_ms = start.elapsed().as_millis();
+                    self.metrics.write().await.record_cache_hit(duration_ms);
+                    
+                    let mut result = self.format_job_summary(event);
+                    result.push_str("\n\n⚡ [CACHED]\n\n📄 Full Job Details:\n");
+                    result.push_str(&event.content);
+                    return Ok(CallToolResult::success(vec![Content::text(result)]));
+                }
+            }
+        }
+
+        // Not in cache, fetch from relays
         let filter = if let Ok(event_id) = EventId::from_hex(&args.job_id) {
             Filter::new().id(event_id)
         } else {
@@ -613,24 +632,6 @@ impl NostrJobsServer {
                     args.job_id.clone()
                 )
         };
-
-        let key = format!("job:{}", args.job_id);
-
-        // Check cache
-        {
-            let start = std::time::Instant::now();
-            let cache = self.cache.read().await;
-            if let Some(cached) = cache.get(&key)
-                && let Some(event) = cached.events.first() {
-                    let duration_ms = start.elapsed().as_millis();
-                    self.metrics.write().await.record_cache_hit(duration_ms);
-                    
-                    let mut result = self.format_job_summary(event);
-                    result.push_str("\n\n⚡ [CACHED]\n\n📄 Full Job Details:\n");
-                    result.push_str(&event.content);
-                    return Ok(CallToolResult::success(vec![Content::text(result)]));
-                }
-        }
 
         match timeout(Duration::from_millis(2500), self.fetch_events_fast(filter, key)).await {
             Ok(Ok(events)) => {
